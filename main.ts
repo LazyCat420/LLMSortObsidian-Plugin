@@ -32,6 +32,64 @@ interface LogEntry {
 	status: 'success' | 'error' | 'skipped';
 }
 
+// --- UTILS: FUZZY MATCHING ---
+function levenshtein(a: string, b: string): number {
+	const matrix = [];
+	for (let i = 0; i <= b.length; i++) matrix[i] = [i];
+	for (let j = 0; j <= a.length; j++) matrix[0][j] = j;
+
+	for (let i = 1; i <= b.length; i++) {
+		for (let j = 1; j <= a.length; j++) {
+			if (b.charAt(i - 1) == a.charAt(j - 1)) {
+				matrix[i][j] = matrix[i - 1][j - 1];
+			} else {
+				matrix[i][j] = Math.min(
+					matrix[i - 1][j - 1] + 1,
+					Math.min(matrix[i][j - 1] + 1, matrix[i - 1][j] + 1)
+				);
+			}
+		}
+	}
+	return matrix[b.length][a.length];
+}
+
+function findBestExistingFolder(target: string, availableFolders: string[]): string | null {
+	if (!target) return null;
+	const targetNorm = normalizePath(target).toLowerCase();
+	
+	// 1. Exact Match (Case Insensitive)
+	const exact = availableFolders.find(f => f.toLowerCase() === targetNorm);
+	if (exact) return exact;
+
+	// 2. Singular/Plural Match (Simple 's' check)
+	const singular = availableFolders.find(f => f.toLowerCase() === targetNorm.replace(/s$/, ''));
+	if (singular) return singular;
+	
+	const plural = availableFolders.find(f => f.toLowerCase() === targetNorm + 's');
+	if (plural) return plural;
+
+	// 3. Fuzzy Match (Allow small typos)
+	// Only for paths > 5 chars to avoid false positives on short names
+	if (targetNorm.length > 5) {
+		let bestMatch = null;
+		let minDistance = Infinity;
+		
+		for (const folder of availableFolders) {
+			const dist = levenshtein(targetNorm, folder.toLowerCase());
+			// Allow 1 edit per 5 characters (approx 20% error rate)
+			const threshold = Math.floor(targetNorm.length * 0.2); 
+			
+			if (dist <= threshold && dist < minDistance) {
+				minDistance = dist;
+				bestMatch = folder;
+			}
+		}
+		if (bestMatch) return bestMatch;
+	}
+
+	return null;
+}
+
 // --- LOG VIEW (RIGHT SIDEBAR) ---
 class LLMSortLogView extends ItemView {
 	plugin: LLMSortPlugin;
@@ -271,6 +329,17 @@ export default class LLMSortPlugin extends Plugin {
 				
 				if (!targetFolder) targetFolder = decision.fallback_folder || 'Unsorted';
 				
+				// --- CRITICAL FIX: FORCE EXISTING FOLDER CHECK ---
+				// Even if LLM said "suggest_new", check if it actually exists (hallucination check)
+				// Or if it made a small typo.
+				const realExistingMatch = findBestExistingFolder(targetFolder, structure);
+				
+				if (realExistingMatch) {
+					// LLM was close enough, or it exists. Use the REAL folder.
+					targetFolder = realExistingMatch;
+				}
+				// ------------------------------------------------
+
 				targetFolder = normalizePath(targetFolder);
 
 				if (targetFolder === inboxPath) {
@@ -345,7 +414,6 @@ export default class LLMSortPlugin extends Plugin {
 	getVaultStructure(): string[] {
 		const folders: string[] = [];
 		const inboxPathClean = normalizePath(this.settings.inboxPath);
-		// Ignore hidden folders and common plugin folders
 		const ignore = ['.git', '.obsidian', '.trash', 'System', inboxPathClean, 'templates', 'Templates', 'assets', 'Attachments'];
 		
 		const processFolder = (folder: TFolder) => {
@@ -453,7 +521,6 @@ class ThinkingEngine {
 	}
 
 	async classifyFile(content: string, folders: string[]): Promise<any> {
-		// UPDATED PROMPT: Balanced approach
 		const prompt = `
         You are an expert file organizer for a Knowledge Base.
         
@@ -461,23 +528,18 @@ class ThinkingEngine {
         ${JSON.stringify(folders)}
         
         YOUR TASK:
-        Analyze the note content and place it in the single BEST folder.
+        Classify the note into ONE of the AVAILABLE FOLDERS.
         
         CRITICAL RULES:
-        1. **PRIORITIZE EXISTING STRUCTURE**: Scan the 'AVAILABLE FOLDERS' list first. If a folder fits the concept well (even if not perfect), USE IT.
-           - Example: If note is "React Tutorial", and "Programming/Javascript" exists, put it there instead of creating "Programming/React".
-           - Example: If note is "Chocolate Cake" and "Recipes" exists, USE IT.
-        2. **SEMANTIC MATCHING**: Do NOT guess wild associations (e.g. do not put Cake in India just because it's food).
-        3. **CREATE NEW ONLY IF NECESSARY**: Only suggest a NEW folder if the note is COMPLETELY alien to your current structure.
-           - If you create a new folder, try to nest it under an existing top-level folder if possible.
+        1. **STRICTLY USE EXISTING FOLDERS**: You MUST select a folder from the 'AVAILABLE FOLDERS' list if there is ANY reasonable match.
+        2. **NO NEW FOLDERS**: Do NOT create new folders unless the topic is completely unrelated to everything in the list.
+        3. **PATH HANDLING**: Return the FULL PATH exactly as shown in the list.
         
         Return JSON ONLY:
         {
-            "action": "route" (use existing) or "suggest_new" (create new),
-            "target_folder": "EXACT path from list (only if action=route)",
-            "suggested_folder": "New folder path (only if action=suggest_new)",
-            "fallback_folder": "Nearest parent folder or 'Unsorted'",
-            "reason": "Explain your decision."
+            "action": "route",
+            "target_folder": "Exact string from AVAILABLE FOLDERS",
+            "reason": "Why this folder fits."
         }
         
         NOTE CONTENT:
@@ -485,7 +547,7 @@ class ThinkingEngine {
         `;
 
 		const response = await this.chat([
-			{ role: 'system', content: 'You are a JSON-only API. Output strictly valid JSON. Prioritize existing folders.' },
+			{ role: 'system', content: 'You are a JSON-only API. Output strictly valid JSON. USE EXISTING FOLDERS.' },
 			{ role: 'user', content: prompt }
 		]);
 
