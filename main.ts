@@ -345,7 +345,8 @@ export default class LLMSortPlugin extends Plugin {
 	getVaultStructure(): string[] {
 		const folders: string[] = [];
 		const inboxPathClean = normalizePath(this.settings.inboxPath);
-		const ignore = ['.git', '.obsidian', '.trash', 'System', inboxPathClean];
+		// Ignore hidden folders and common plugin folders
+		const ignore = ['.git', '.obsidian', '.trash', 'System', inboxPathClean, 'templates', 'Templates', 'assets', 'Attachments'];
 		
 		const processFolder = (folder: TFolder) => {
 			if (ignore.some(i => folder.path.includes(i))) return;
@@ -452,30 +453,31 @@ class ThinkingEngine {
 	}
 
 	async classifyFile(content: string, folders: string[]): Promise<any> {
-		// UPDATED PROMPT: Force high precision matching and penalize weak associations
+		// UPDATED PROMPT: Balanced approach
 		const prompt = `
         You are an expert file organizer for a Knowledge Base.
         
-        AVAILABLE FOLDERS (Use one of these ONLY if it is a PERFECT Semantic Match):
+        AVAILABLE FOLDERS:
         ${JSON.stringify(folders)}
         
         YOUR TASK:
         Analyze the note content and place it in the single BEST folder.
         
         CRITICAL RULES:
-        1. **SEMANTIC MATCHING**: Do NOT guess. If the note is about "Cake", and you see "Food/India", DO NOT put it there unless the note EXPLICITLY mentions Indian cuisine.
-        2. **PATH HIERARCHY**: Look at the entire path. "Main Dish/India" implies INDIAN Main Dishes. A generic "Chocolate Cake" does NOT belong there.
-        3. **CREATE NEW IF NEEDED**: If the note does not fit PERFECTLY into an existing folder, you MUST suggest a NEW folder.
-           - Example: If note is "Chocolate Cake" and only "Main Dish/India" exists -> Suggest "Food/Desserts" or "Recipes/Baking".
-        4. **BE SPECIFIC**: Avoid top-level dumping.
+        1. **PRIORITIZE EXISTING STRUCTURE**: Scan the 'AVAILABLE FOLDERS' list first. If a folder fits the concept well (even if not perfect), USE IT.
+           - Example: If note is "React Tutorial", and "Programming/Javascript" exists, put it there instead of creating "Programming/React".
+           - Example: If note is "Chocolate Cake" and "Recipes" exists, USE IT.
+        2. **SEMANTIC MATCHING**: Do NOT guess wild associations (e.g. do not put Cake in India just because it's food).
+        3. **CREATE NEW ONLY IF NECESSARY**: Only suggest a NEW folder if the note is COMPLETELY alien to your current structure.
+           - If you create a new folder, try to nest it under an existing top-level folder if possible.
         
         Return JSON ONLY:
         {
-            "action": "route" (if perfect match found) or "suggest_new" (if no perfect match),
+            "action": "route" (use existing) or "suggest_new" (create new),
             "target_folder": "EXACT path from list (only if action=route)",
             "suggested_folder": "New folder path (only if action=suggest_new)",
             "fallback_folder": "Nearest parent folder or 'Unsorted'",
-            "reason": "Explain WHY it belongs here. If creating new, explain why existing folders failed."
+            "reason": "Explain your decision."
         }
         
         NOTE CONTENT:
@@ -483,7 +485,7 @@ class ThinkingEngine {
         `;
 
 		const response = await this.chat([
-			{ role: 'system', content: 'You are a JSON-only API. Output strictly valid JSON. Do not hallucinate folder matches.' },
+			{ role: 'system', content: 'You are a JSON-only API. Output strictly valid JSON. Prioritize existing folders.' },
 			{ role: 'user', content: prompt }
 		]);
 
