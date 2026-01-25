@@ -1,0 +1,10 @@
+{
+	"id": "llm-sort-obsidian",
+	"name": "LLM Sort & Split",
+	"version": "1.0.0",
+	"minAppVersion": "0.15.0",
+	"description": "AI-powered inbox sorting and daily note splitting using Ollama or LM Studio.",
+	"author": "LazyCat420",
+	"authorUrl": "https://github.com/LazyCat420",
+	"isDesktopOnly": false
+}
