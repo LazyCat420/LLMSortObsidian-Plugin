@@ -89,8 +89,21 @@ class LLMSortLogView extends ItemView {
 			else if (log.status === 'error') setIcon(iconSpan, "alert-circle");
 			else setIcon(iconSpan, "minus-circle");
 			
-			header.createSpan({ text: log.filename, cls: "llm-sort-filename" });
+			const fileLink = header.createSpan({ text: log.filename, cls: "llm-sort-filename" });
 			header.createSpan({ text: log.timestamp.toLocaleTimeString(), cls: "llm-sort-time" });
+
+			// Click to open file
+			if (log.status === 'success') {
+				fileLink.addClass("llm-sort-clickable");
+				fileLink.addEventListener("click", async () => {
+					const file = this.plugin.app.vault.getAbstractFileByPath(normalizePath(log.newPath + "/" + log.filename));
+					if (file instanceof TFile) {
+						await this.plugin.app.workspace.getLeaf(false).openFile(file);
+					} else {
+						new Notice("File not found (maybe moved or renamed?)");
+					}
+				});
+			}
 
 			// Details
 			if (log.status === 'success') {
@@ -105,6 +118,7 @@ class LLMSortLogView extends ItemView {
 			item.style.padding = "8px";
 			item.style.border = "1px solid var(--background-modifier-border)";
 			item.style.borderRadius = "6px";
+			item.style.cursor = "default";
 		}
 	}
 }
@@ -176,28 +190,18 @@ export default class LLMSortPlugin extends Plugin {
 		const leaves = workspace.getLeavesOfType(LOG_VIEW_TYPE);
 
 		if (leaves.length > 0) {
-			// A leaf with our view already exists, use that
 			leaf = leaves[0];
 		} else {
-			// Our view could not be found in the workspace, create a new leaf
-			// in the right sidebar for it
 			leaf = workspace.getRightLeaf(false);
 			if (leaf) await leaf.setViewState({ type: LOG_VIEW_TYPE, active: true });
 		}
-
-		// "Reveal" the leaf in case it is in a collapsed sidebar
 		if (leaf) workspace.revealLeaf(leaf);
 	}
 
 	addLog(entry: LogEntry) {
 		this.sortHistory.push(entry);
-		// Keep history manageable
 		if (this.sortHistory.length > 100) this.sortHistory.shift();
-		
-		// Refresh view if active
-		if (this.logView) {
-			this.logView.refresh();
-		}
+		if (this.logView) this.logView.refresh();
 	}
 
 	async loadSettings() {
@@ -216,7 +220,7 @@ export default class LLMSortPlugin extends Plugin {
 	startAutoSort() {
 		this.stopAutoSort();
 		this.autoSortIntervalId = window.setInterval(() => {
-			this.processInbox(true); // Silent mode
+			this.processInbox(true); 
 		}, this.settings.autoSortInterval * 1000);
 	}
 
@@ -238,7 +242,6 @@ export default class LLMSortPlugin extends Plugin {
 			return;
 		}
 
-		// Get only direct children that are MD files
 		const files = inboxFolder.children.filter(f => f instanceof TFile && f.extension === 'md');
 		
 		if (files.length === 0) {
@@ -254,28 +257,22 @@ export default class LLMSortPlugin extends Plugin {
 		for (const file of files) {
 			if (!(file instanceof TFile)) continue;
 			
-			// SAFETY CHECK: Ensure file is ACTUALLY in the inbox
 			if (normalizePath(file.parent?.path || "") !== inboxPath) {
 				console.warn(`Skipping file ${file.name} because it is not in the inbox root.`);
 				continue;
 			}
 
 			const content = await this.app.vault.read(file);
-			
-			// Simple heuristic: skip if empty or extremely short
 			if (content.trim().length < 10) continue;
 
 			try {
 				const decision = await engine.classifyFile(content, structure);
 				let targetFolder = decision.action === 'route' ? decision.target_folder : decision.suggested_folder;
 				
-				// Fallback
 				if (!targetFolder) targetFolder = decision.fallback_folder || 'Unsorted';
 				
-				// Clean path
 				targetFolder = normalizePath(targetFolder);
 
-				// Double check we aren't moving to the same place (Inbox)
 				if (targetFolder === inboxPath) {
 					this.addLog({
 						timestamp: new Date(),
@@ -309,24 +306,19 @@ export default class LLMSortPlugin extends Plugin {
 	async moveFileSafely(file: TFile, targetFolderPath: string, reason: string) {
 		let finalFolderPath = targetFolderPath;
 		
-		// 1. Resolve Case-Insensitivity to prevent duplicate folder creation
-		// (e.g., if "Notes" exists, don't create "notes")
 		const existingFolder = this.findCaseInsensitiveFolder(targetFolderPath);
 		if (existingFolder) {
 			finalFolderPath = existingFolder.path;
 		} else {
-			// Folder doesn't exist, create it
 			try {
 				await this.app.vault.createFolder(finalFolderPath);
 			} catch (e) {
-				// Ignore error if it already exists (race condition)
+				// Ignore if exists
 			}
 		}
 
-		// 2. Determine new path
 		const newPath = normalizePath(`${finalFolderPath}/${file.name}`);
 		
-		// 3. Move
 		try {
 			await this.app.fileManager.renameFile(file, newPath);
 			
@@ -345,15 +337,6 @@ export default class LLMSortPlugin extends Plugin {
 	}
 
 	findCaseInsensitiveFolder(path: string): TFolder | null {
-		const parts = path.split('/');
-		let currentPath = "";
-		let currentFolder = this.app.vault.getRoot();
-		
-		// This is a naive check; for full path matching we'd walk the tree
-		// But Obsidian's getAbstractFileByPath is case-sensitive.
-		// Let's iterate all folders and check.
-		// Note: This might be slow for huge vaults, but safer.
-		
 		const allFolders = this.app.vault.getAllLoadedFiles().filter(f => f instanceof TFolder) as TFolder[];
 		const match = allFolders.find(f => f.path.toLowerCase() === path.toLowerCase());
 		return match || null;
@@ -383,21 +366,18 @@ export default class LLMSortPlugin extends Plugin {
 		new Notice('Analyzing note for splitting...');
 		const engine = new ThinkingEngine(this.settings);
 		
-		// Regex split by headers
 		const chunks = content.split(/(?=^#{1,6} )/gm).filter(c => c.trim().length > 0);
 		const allFiles = this.app.vault.getFiles().map(f => f.name);
 		
-		this.activateView(); // Show logs
+		this.activateView(); 
 
 		for (const chunk of chunks) {
-			if (chunk.trim().length < 50) continue; // Skip tiny chunks
+			if (chunk.trim().length < 50) continue; 
 
 			try {
 				const result = await engine.splitNote(chunk, allFiles.slice(0, 200));
 				let filename = result.filename;
 				if (!filename.endsWith('.md')) filename += '.md';
-				
-				// Sanitize filename
 				filename = filename.replace(/[\\/:]/g, '-');
 				
 				await this.app.vault.create(filename, chunk);
@@ -426,7 +406,7 @@ export default class LLMSortPlugin extends Plugin {
 	}
 }
 
-// --- LLM ENGINE (UNCHANGED LOGIC, JUST RE-INCLUDED FOR COMPLETENESS) ---
+// --- LLM ENGINE ---
 class ThinkingEngine {
 	settings: LLMSortSettings;
 
@@ -472,35 +452,38 @@ class ThinkingEngine {
 	}
 
 	async classifyFile(content: string, folders: string[]): Promise<any> {
+		// UPDATED PROMPT: Force high precision matching and penalize weak associations
 		const prompt = `
-        You are an intelligent file sorter.
-        EXISTING FOLDERS:
+        You are an expert file organizer for a Knowledge Base.
+        
+        AVAILABLE FOLDERS (Use one of these ONLY if it is a PERFECT Semantic Match):
         ${JSON.stringify(folders)}
         
-        TASK:
-        Classify this note into an EXISTING folder if possible.
-        If it requires a NEW folder, suggest a specific, descriptive name (e.g. "Projects/Python" instead of just "Python").
+        YOUR TASK:
+        Analyze the note content and place it in the single BEST folder.
         
-        RULES:
-        1. PREFER EXISTING FOLDERS.
-        2. DO NOT use generic names like "Notes" or "General".
-        3. If specific topic matches an existing folder, use it.
+        CRITICAL RULES:
+        1. **SEMANTIC MATCHING**: Do NOT guess. If the note is about "Cake", and you see "Food/India", DO NOT put it there unless the note EXPLICITLY mentions Indian cuisine.
+        2. **PATH HIERARCHY**: Look at the entire path. "Main Dish/India" implies INDIAN Main Dishes. A generic "Chocolate Cake" does NOT belong there.
+        3. **CREATE NEW IF NEEDED**: If the note does not fit PERFECTLY into an existing folder, you MUST suggest a NEW folder.
+           - Example: If note is "Chocolate Cake" and only "Main Dish/India" exists -> Suggest "Food/Desserts" or "Recipes/Baking".
+        4. **BE SPECIFIC**: Avoid top-level dumping.
         
         Return JSON ONLY:
         {
-            "action": "route" or "suggest_new",
-            "target_folder": "exact path from list",
-            "suggested_folder": "new path",
-            "fallback_folder": "closest match",
-            "reason": "short explanation"
+            "action": "route" (if perfect match found) or "suggest_new" (if no perfect match),
+            "target_folder": "EXACT path from list (only if action=route)",
+            "suggested_folder": "New folder path (only if action=suggest_new)",
+            "fallback_folder": "Nearest parent folder or 'Unsorted'",
+            "reason": "Explain WHY it belongs here. If creating new, explain why existing folders failed."
         }
         
-        CONTENT:
+        NOTE CONTENT:
         ${content.substring(0, 1500)}
         `;
 
 		const response = await this.chat([
-			{ role: 'system', content: 'You are a JSON-only API. Output strictly valid JSON.' },
+			{ role: 'system', content: 'You are a JSON-only API. Output strictly valid JSON. Do not hallucinate folder matches.' },
 			{ role: 'user', content: prompt }
 		]);
 
