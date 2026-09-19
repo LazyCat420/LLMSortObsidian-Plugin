@@ -4,9 +4,10 @@ import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Set
 const LOG_VIEW_TYPE = "llm-sort-log-view";
 
 interface LLMSortSettings {
-	llmBackend: 'ollama' | 'lmstudio';
+	llmBackend: 'ollama' | 'lmstudio' | 'dev2sdk';
 	ollamaHost: string;
 	lmStudioHost: string;
+	dev2SdkHost: string;
 	modelName: string;
 	inboxPath: string;
 	autoSortEnabled: boolean;
@@ -17,6 +18,7 @@ const DEFAULT_SETTINGS: LLMSortSettings = {
 	llmBackend: 'ollama',
 	ollamaHost: 'http://localhost:11434',
 	lmStudioHost: 'http://localhost:1234',
+	dev2SdkHost: 'http://localhost:8080',
 	modelName: 'llama3',
 	inboxPath: '00_Inbox',
 	autoSortEnabled: false,
@@ -484,6 +486,38 @@ class ThinkingEngine {
 	}
 
 	async chat(messages: any[], jsonMode = true): Promise<string> {
+		if (this.settings.llmBackend === 'dev2sdk') {
+			// Adapter for Dev 2 Shared Runtime SDK
+			// While the server is being built, we mock the contract payload
+			console.log("[Dev2SDK] Creating run for prompt");
+			
+			// Extract intention from prompt
+			const userPrompt = messages.find(m => m.role === 'user')?.content || "";
+			let mockResult = "{}";
+			
+			if (userPrompt.includes("Give this text chunk a filename")) {
+				mockResult = JSON.stringify({ filename: "Split-Note-from-SDK.md", confidence: 0.95 });
+			} else {
+				// We assume it's a classify route
+				// Try to extract folders from prompt
+				const foldersMatch = userPrompt.match(/AVAILABLE FOLDERS:\s*(\[.*?\])/s);
+				let fallback = "Unsorted";
+				if (foldersMatch) {
+					try {
+						const folders = JSON.parse(foldersMatch[1]);
+						if (folders.length > 0) fallback = folders[0];
+					} catch(e) {}
+				}
+				mockResult = JSON.stringify({ action: "route", target_folder: fallback, reason: "Mocked routing by Dev 2 SDK." });
+			}
+			
+			// Simulate network delay for the observe stream
+			await new Promise(r => setTimeout(r, 800));
+			console.log("[Dev2SDK] Run completed, returning result event");
+			
+			return mockResult;
+		}
+
 		const url = this.settings.llmBackend === 'ollama' 
 			? `${this.settings.ollamaHost}/api/chat`
 			: `${this.settings.lmStudioHost}/v1/chat/completions`;
@@ -611,9 +645,19 @@ class LLMSortSettingTab extends PluginSettingTab {
 			.addDropdown(dropdown => dropdown
 				.addOption('ollama', 'Ollama')
 				.addOption('lmstudio', 'LM Studio')
+				.addOption('dev2sdk', 'Dev 2 SDK (Shared Runtime)')
 				.setValue(this.plugin.settings.llmBackend)
 				.onChange(async (value) => {
-					this.plugin.settings.llmBackend = value as 'ollama' | 'lmstudio';
+					this.plugin.settings.llmBackend = value as 'ollama' | 'lmstudio' | 'dev2sdk';
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Dev 2 SDK Host')
+			.addText(text => text
+				.setValue(this.plugin.settings.dev2SdkHost)
+				.onChange(async (value) => {
+					this.plugin.settings.dev2SdkHost = value;
 					await this.plugin.saveSettings();
 				}));
 
